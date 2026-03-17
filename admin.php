@@ -2,21 +2,14 @@
 declare(strict_types=1);
 
 session_start();
-require __DIR__ . '/db.php';
-require __DIR__ . '/common.php';
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/common.php';
 
 const ADMIN_PASSWORD = 'Ratan123!';
 
 function isAdminLoggedIn(): bool
 {
     return isset($_SESSION['ratan_admin']) && $_SESSION['ratan_admin'] === true;
-}
-
-/** @return array<int, string> */
-function getColumns(PDO $pdo, string $table): array
-{
-    $stmt = $pdo->query('SHOW COLUMNS FROM ' . $table);
-    return array_map(static fn(array $col): string => (string) $col['Field'], $stmt->fetchAll(PDO::FETCH_ASSOC));
 }
 
 function storeUploadedImage(array $file): string
@@ -26,12 +19,26 @@ function storeUploadedImage(array $file): string
     }
 
     $tmp = (string) ($file['tmp_name'] ?? '');
-    $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $mime = (string) finfo_file($finfo, $tmp);
-    finfo_close($finfo);
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        throw new RuntimeException('Dočasný soubor uploadu není dostupný.');
+    }
 
-    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
-    if (!isset($allowed[$mime])) {
+    $allowed = ['jpg', 'jpeg', 'png', 'webp'];
+    $ext = strtolower(pathinfo((string) ($file['name'] ?? ''), PATHINFO_EXTENSION));
+
+    if (function_exists('finfo_open')) {
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo) {
+            $mime = (string) finfo_file($finfo, $tmp);
+            finfo_close($finfo);
+            $mimeMap = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+            if (isset($mimeMap[$mime])) {
+                $ext = $mimeMap[$mime];
+            }
+        }
+    }
+
+    if (!in_array($ext, $allowed, true)) {
         throw new RuntimeException('Povolené formáty: JPG, PNG, WEBP.');
     }
 
@@ -40,7 +47,7 @@ function storeUploadedImage(array $file): string
         throw new RuntimeException('Nelze vytvořit upload složku.');
     }
 
-    $filename = bin2hex(random_bytes(12)) . '.' . $allowed[$mime];
+    $filename = bin2hex(random_bytes(12)) . '.' . ($ext === 'jpeg' ? 'jpg' : $ext);
     $target = $uploadDir . '/' . $filename;
     if (!move_uploaded_file($tmp, $target)) {
         throw new RuntimeException('Uložení souboru selhalo.');
@@ -51,7 +58,11 @@ function storeUploadedImage(array $file): string
 
 function saveReview(PDO $pdo, array $input): void
 {
-    $columns = getColumns($pdo, 'recenze');
+    if (!hasTable($pdo, 'recenze')) {
+        throw new RuntimeException('Chybí tabulka recenze.');
+    }
+
+    $columns = tableColumns($pdo, 'recenze');
     $map = [
         'typ' => $input['typ'],
         'nazev' => $input['nazev'],
@@ -72,6 +83,10 @@ function saveReview(PDO $pdo, array $input): void
         if (in_array($column, $columns, true)) {
             $insert[$column] = $value;
         }
+    }
+
+    if ($insert === []) {
+        throw new RuntimeException('Tabulka recenze nemá očekávané sloupce.');
     }
 
     $names = array_keys($insert);
@@ -121,13 +136,21 @@ if (isAdminLoggedIn() && isset($_POST['action'])) {
         }
 
         if ($_POST['action'] === 'update_status') {
-            $pdo->exec('CREATE TABLE IF NOT EXISTS statusy (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                aktivita VARCHAR(100) NOT NULL,
-                nazev_dila VARCHAR(255) NOT NULL,
-                typ VARCHAR(20) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+            try {
+                $pdo->exec('CREATE TABLE IF NOT EXISTS statusy (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    aktivita VARCHAR(100) NOT NULL,
+                    nazev_dila VARCHAR(255) NOT NULL,
+                    typ VARCHAR(20) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+            } catch (Throwable $e) {
+                // no create rights
+            }
+
+            if (!hasTable($pdo, 'statusy')) {
+                throw new RuntimeException('Chybí tabulka statusy.');
+            }
 
             $stmt = $pdo->prepare('INSERT INTO statusy (aktivita, nazev_dila, typ) VALUES (:aktivita, :nazev_dila, :typ)');
             $stmt->execute([
@@ -138,7 +161,7 @@ if (isAdminLoggedIn() && isset($_POST['action'])) {
             $message = 'Status byl aktualizován.';
         }
     } catch (Throwable $e) {
-        $error = 'Chyba: ' . $e->getMessage();
+        $error = appError('Chyba při ukládání dat: ' . $e->getMessage());
     }
 }
 ?>

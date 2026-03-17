@@ -2,62 +2,61 @@
 declare(strict_types=1);
 
 session_start();
-require __DIR__ . '/db.php';
-require __DIR__ . '/common.php';
-
-/** @return array<int, string> */
-function getRecenzeColumns(PDO $pdo): array
-{
-    static $cols = null;
-    if ($cols !== null) {
-        return $cols;
-    }
-
-    $stmt = $pdo->query('SHOW COLUMNS FROM recenze');
-    $cols = [];
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $column) {
-        $cols[] = (string) $column['Field'];
-    }
-
-    return $cols;
-}
+require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/common.php';
 
 $newsletter = handleNewsletterSubmit($pdo);
 $kat = (string) (filter_input(INPUT_GET, 'kat', FILTER_UNSAFE_RAW) ?? '');
 $q = trim((string) (filter_input(INPUT_GET, 'q', FILTER_UNSAFE_RAW) ?? ''));
 
-$params = [];
-$where = [];
-
-if ($kat === 'hry') {
-    $where[] = 'typ = :typ_hra';
-    $params['typ_hra'] = 'Hra';
-} elseif ($kat === 'anime') {
-    $where[] = 'typ = :typ_anime';
-    $params['typ_anime'] = 'Anime';
-}
-
-$searchColumn = in_array('kratky_popis', getRecenzeColumns($pdo), true) ? 'kratky_popis' : 'text_recenze';
-if ($q !== '') {
-    $where[] = "(nazev LIKE :q OR {$searchColumn} LIKE :q)";
-    $params['q'] = '%' . $q . '%';
-}
-
-$sql = 'SELECT id, typ, nazev, fotka, skore FROM recenze';
-if ($where) {
-    $sql .= ' WHERE ' . implode(' AND ', $where);
-}
-$sql .= ' ORDER BY id DESC';
-
-$stmt = $pdo->prepare($sql);
-$stmt->execute($params);
-$recenze = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
+$recenze = [];
 $status = false;
-$hasStatusTable = $pdo->query("SHOW TABLES LIKE 'statusy'");
-if ($hasStatusTable && $hasStatusTable->fetchColumn()) {
-    $statusStmt = $pdo->query('SELECT aktivita, nazev_dila, typ FROM statusy ORDER BY id DESC LIMIT 1');
-    $status = $statusStmt ? $statusStmt->fetch(PDO::FETCH_ASSOC) : false;
+$pageError = '';
+
+if (!hasTable($pdo, 'recenze')) {
+    $pageError = 'Chybí tabulka recenze.';
+} else {
+    try {
+        $columns = tableColumns($pdo, 'recenze');
+        $searchColumn = in_array('kratky_popis', $columns, true) ? 'kratky_popis' : 'text_recenze';
+
+        $params = [];
+        $where = [];
+
+        if ($kat === 'hry') {
+            $where[] = 'typ = :typ_hra';
+            $params['typ_hra'] = 'Hra';
+        } elseif ($kat === 'anime') {
+            $where[] = 'typ = :typ_anime';
+            $params['typ_anime'] = 'Anime';
+        }
+
+        if ($q !== '' && in_array($searchColumn, $columns, true)) {
+            $where[] = "(nazev LIKE :q OR {$searchColumn} LIKE :q)";
+            $params['q'] = '%' . $q . '%';
+        }
+
+        $sql = 'SELECT id, typ, nazev, fotka, skore FROM recenze';
+        if ($where) {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+        $sql .= ' ORDER BY id DESC';
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $recenze = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $pageError = appError('Nepodařilo se načíst recenze.');
+    }
+}
+
+if (hasTable($pdo, 'statusy')) {
+    try {
+        $statusStmt = $pdo->query('SELECT aktivita, nazev_dila, typ FROM statusy ORDER BY id DESC LIMIT 1');
+        $status = $statusStmt ? $statusStmt->fetch(PDO::FETCH_ASSOC) : false;
+    } catch (Throwable $e) {
+        $status = false;
+    }
 }
 ?>
 <!doctype html>
@@ -103,6 +102,8 @@ if ($hasStatusTable && $hasStatusTable->fetchColumn()) {
         <aside class="statusbar"><strong><?= e((string) $status['aktivita']); ?>:</strong> <?= e((string) $status['nazev_dila']); ?> (<?= e((string) $status['typ']); ?>)</aside>
     <?php endif; ?>
 
+    <?php if ($pageError): ?><p class="msg"><?= e($pageError); ?></p><?php endif; ?>
+
     <main>
         <form class="filters" method="get" action="index.php">
             <input type="search" name="q" value="<?= e($q); ?>" placeholder="Hledat recenzi...">
@@ -117,14 +118,14 @@ if ($hasStatusTable && $hasStatusTable->fetchColumn()) {
         <section class="grid">
             <?php foreach ($recenze as $item): ?>
                 <article class="card">
-                    <a class="card-link" href="detail.php?id=<?= (int) $item['id']; ?>">
+                    <a class="card-link" href="detail.php?id=<?= (int) ($item['id'] ?? 0); ?>">
                         <div class="thumb-wrap">
-                            <img src="<?= e((string) $item['fotka']); ?>" alt="<?= e((string) $item['nazev']); ?>">
-                            <span class="score"><?= (int) $item['skore']; ?>%</span>
+                            <img src="<?= e((string) ($item['fotka'] ?? '')); ?>" alt="<?= e((string) ($item['nazev'] ?? '')); ?>">
+                            <span class="score"><?= (int) ($item['skore'] ?? 0); ?>%</span>
                         </div>
                         <div class="card-body">
-                            <p class="type"><?= e((string) $item['typ']); ?></p>
-                            <h2><?= e((string) $item['nazev']); ?></h2>
+                            <p class="type"><?= e((string) ($item['typ'] ?? '')); ?></p>
+                            <h2><?= e((string) ($item['nazev'] ?? '')); ?></h2>
                         </div>
                     </a>
                 </article>
